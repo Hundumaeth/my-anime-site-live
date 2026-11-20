@@ -17,16 +17,17 @@
   h1 { font-size:clamp(2.4rem, 9vw, 4.5rem); font-weight:800; margin:0; letter-spacing:-0.03em; line-height:1; }
   p.sub { color:var(--muted); margin:12px 0 24px; max-width:44ch; }
   input { width:100%; max-width:420px; padding:14px 16px; font:inherit; color:var(--ink); background:var(--card); border:2px solid transparent; border-radius:10px; }
-  input:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  input:focus-visible, button:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
   main { max-width:1000px; margin:0 auto; padding:0 20px 60px; }
   h2 { font-size:1.2rem; margin:8px 0 16px; }
   #grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:16px; }
-  .card { background:var(--card); border-radius:10px; overflow:hidden; }
+  .card { background:var(--card); border-radius:10px; overflow:hidden; text-decoration:none; color:inherit; display:block; }
   .card img { width:100%; aspect-ratio:2/3; object-fit:cover; display:block; background:var(--muted); }
   .card div { padding:10px 12px 14px; }
   .card b { display:block; font-size:.95rem; line-height:1.25; }
   .card span { color:var(--muted); font-size:.85rem; }
   #status { color:var(--muted); }
+  #retry { display:none; margin-top:8px; padding:12px 18px; font:inherit; font-weight:600; color:#fff; background:var(--accent); border:0; border-radius:10px; }
 </style>
 </head>
 <body>
@@ -36,36 +37,88 @@
   <input id="q" type="search" placeholder="Search anime…" aria-label="Search anime">
 </header>
 <main>
-  <h2 id="heading">Top anime</h2>
+  <h2 id="heading">Popular anime</h2>
   <p id="status"></p>
+  <button id="retry">Try again</button>
   <div id="grid"></div>
 </main>
 <script>
   const grid = document.getElementById("grid");
   const statusEl = document.getElementById("status");
   const heading = document.getElementById("heading");
+  const retry = document.getElementById("retry");
   const q = document.getElementById("q");
 
+  const QUERY = `
+    query ($search: String, $sort: [MediaSort]) {
+      Page(page: 1, perPage: 24) {
+        media(search: $search, type: ANIME, sort: $sort) {
+          id
+          siteUrl
+          averageScore
+          title { romaji english }
+          coverImage { large }
+        }
+      }
+    }`;
+
   async function load(query) {
+    retry.style.display = "none";
     statusEl.textContent = "Loading…";
     grid.innerHTML = "";
-    const url = query
-      ? "https://api.jikan.moe/v4/anime?limit=24&q=" + encodeURIComponent(query)
-      : "https://api.jikan.moe/v4/top/anime?limit=24";
+
+    const variables = query
+      ? { search: query, sort: ["SEARCH_MATCH"] }
+      : { sort: ["POPULARITY_DESC"] };
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+
     try {
-      const res = await fetch(url);
-      const { data } = await res.json();
-      heading.textContent = query ? "Results for “" + query + "”" : "Top anime";
-      statusEl.textContent = data.length ? "" : "No anime found. Try a different title.";
-      grid.innerHTML = data.map(a => `
-        <a class="card" href="${a.url}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit">
-          <img src="${a.images.jpg.image_url}" alt="${a.title}" loading="lazy">
-          <div><b>${a.title}</b><span>${a.score ? "★ " + a.score : "Not rated"}</span></div>
-        </a>`).join("");
+      const res = await fetch("https://graphql.anilist.co", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ query: QUERY, variables }),
+        signal: controller.signal
+      });
+      const json = await res.json();
+      const list = json.data.Page.media;
+
+      heading.textContent = query ? "Results for “" + query + "”" : "Popular anime";
+      statusEl.textContent = list.length ? "" : "No anime found. Try a different title.";
+
+      list.forEach(a => {
+        const title = a.title.english || a.title.romaji;
+        const card = document.createElement("a");
+        card.className = "card";
+        card.href = a.siteUrl;
+        card.target = "_blank";
+        card.rel = "noopener";
+
+        const img = document.createElement("img");
+        img.src = a.coverImage.large;
+        img.alt = title;
+        img.loading = "lazy";
+
+        const info = document.createElement("div");
+        const name = document.createElement("b");
+        name.textContent = title;
+        const score = document.createElement("span");
+        score.textContent = a.averageScore ? "★ " + (a.averageScore / 10).toFixed(1) : "Not rated";
+
+        info.append(name, score);
+        card.append(img, info);
+        grid.append(card);
+      });
     } catch (e) {
       statusEl.textContent = "Couldn’t load anime. Check your connection and try again.";
+      retry.style.display = "inline-block";
+    } finally {
+      clearTimeout(timer);
     }
   }
+
+  retry.addEventListener("click", () => load(q.value.trim()));
 
   let t;
   q.addEventListener("input", () => {
